@@ -1,0 +1,293 @@
+name: local-llama-bonsai-pq2
+
+services:
+  llama-server:
+    build:
+      context: .
+      args:
+        LLAMA_REPO: "${LLAMA_REPO:-https://github.com/PrismML-Eng/llama.cpp.git}"
+        LLAMA_REF: "${LLAMA_REF:-prism}"
+        CUDA_ARCH: "${CUDA_ARCH:-86}"
+        CUDA_VERSION: "${CUDA_VERSION:-12.4}"
+        PARALLEL_JOBS: "${PARALLEL_JOBS:-4}"
+      dockerfile_inline: |
+        ARG CUDA_VERSION=12.4
+        FROM nvidia/cuda:${CUDA_VERSION}.1-devel-ubuntu22.04 AS build
+        ARG LLAMA_REPO
+        ARG LLAMA_REF
+        ARG CUDA_ARCH
+        ARG PARALLEL_JOBS
+        RUN apt-get update && apt-get install -y --no-install-recommends \
+            git cmake ninja-build build-essential ca-certificates \
+            libcurl4-openssl-dev pkg-config \
+            && rm -rf /var/lib/apt/lists/*
+        WORKDIR /src
+        RUN git clone --depth 1 --recurse-submodules --shallow-submodules \
+            --branch "${LLAMA_REF}" "${LLAMA_REPO}" llama.cpp
+        WORKDIR /src/llama.cpp
+        RUN ln -sf /usr/local/cuda/lib64/stubs/libcuda.so /usr/local/cuda/lib64/stubs/libcuda.so.1 && \
+            cmake -B build -G Ninja \
+              -DCMAKE_BUILD_TYPE=Release \
+              -DGGML_CUDA=ON \
+              -DCMAKE_CUDA_ARCHITECTURES="${CUDA_ARCH}" \
+              -DLLAMA_CURL=ON \
+              -DCMAKE_EXE_LINKER_FLAGS="-L/usr/local/cuda/lib64/stubs -Wl,-rpath-link,/usr/local/cuda/lib64/stubs" \
+              -DCMAKE_SHARED_LINKER_FLAGS="-L/usr/local/cuda/lib64/stubs -Wl,-rpath-link,/usr/local/cuda/lib64/stubs" && \
+            cmake --build build -j"${PARALLEL_JOBS}" --target llama-server
+        FROM nvidia/cuda:${CUDA_VERSION}.1-runtime-ubuntu22.04
+        RUN apt-get update && apt-get install -y --no-install-recommends \
+            curl ca-certificates libgomp1 libcurl4 \
+            && rm -rf /var/lib/apt/lists/*
+        WORKDIR /app
+        COPY --from=build /src/llama.cpp/build /app/build
+        ENV LD_LIBRARY_PATH=/app/build/lib:/app/build/bin:/app/build/src:/app/build/ggml/src:/usr/local/cuda/lib64:/usr/local/lib:/usr/lib/x86_64-linux-gnu
+        ENTRYPOINT ["/app/build/bin/llama-server"]
+    image: ${LLAMA_IMAGE:-local/prism-llama.cpp:server-cuda-pq2}
+    container_name: llama-server-pq2
+    restart: unless-stopped
+    depends_on:
+      init-models:
+        condition: service_completed_successfully
+      init-template:
+        condition: service_completed_successfully
+
+    command:
+      - --host
+      - "0.0.0.0"
+      - --port
+      - "8080"
+      - --model
+      - "${MODEL_PATH:-/models/bonsai2-27b-pq20.gguf}"
+      - --alias
+      - "${MODEL_ALIAS:-bonsai-2-27b}"
+      - --ctx-size
+      - "${CTX_SIZE:-65536}"
+      - --n-gpu-layers
+      - "${GPU_LAYERS:-99}"
+      - --flash-attn
+      - "on"
+      - --cache-type-k
+      - "q4_0"
+      - --cache-type-v
+      - "q4_0"
+      - --parallel
+      - "1"
+      - --threads
+      - "8"
+      - --batch-size
+      - "2048"
+      - --ubatch-size
+      - "256"
+      - --predict
+      - "${MAX_TOKENS:-16384}"
+      - --temp
+      - "${TEMPERATURE:-0.25}"
+      - --top-p
+      - "${TOP_P:-0.95}"
+      - --top-k
+      - "${TOP_K:-0}"
+      - --min-p
+      - "${MIN_P:-0.05}"
+      - --presence-penalty
+      - "${PRESENCE_PENALTY:-0.1}"
+      - --repeat-penalty
+      - "${REPEAT_PENALTY:-1.05}"
+      - --reasoning-budget
+      - "${REASONING_BUDGET:-8192}"
+      - --frequency-penalty
+      - "${FREQUENCY_PENALTY:-0.25}"
+      - --jinja
+      - --chat-template-file
+      - "${CHAT_TEMPLATE:-/models/templates/chat_template.jinja}"
+      - --chat-template-kwargs
+      - "${CHAT_KWARGS:-{}}"
+    
+    ports:
+      - "${API_PORT:-8080}:8080"
+    
+    volumes:
+      - llama_models:/models
+    
+    environment:
+      CUDA_VISIBLE_DEVICES: "0"
+      LLAMA_CACHE: "/models/hf_cache"
+      LLAMA_ARG_KEEP_ALIVE: "-1"
+    
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8080/health || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 20
+      start_period: 600s
+
+  init-models:
+    image: python:3.11-slim
+    container_name: llama-init-pq2
+    restart: "no"
+    working_dir: /models
+    volumes:
+      - llama_models:/models
+    environment:
+      MAIN_REPO: "${MAIN_REPO:-prism-ml/Ternary-Bonsai-2-27B-gguf}"
+      MAIN_FILE: "${MAIN_FILE:-Ternary-Bonsai-2-27B-PQ2_0.gguf}"
+      MODEL_PATH: "${MODEL_PATH:-/models/bonsai2-27b-pq20.gguf}"
+      MMPROJ_FILE: "${MMPROJ_FILE:-Ternary-Bonsai-2-27B-mmproj-Q8_0.gguf}"
+      MMPROJ_PATH: "${MMPROJ_PATH:-/models/bonsai2-27b-mmproj-q8_0.gguf}"
+      LOAD_VISION: "${LOAD_VISION:-0}"
+      HF_HOME: "/models/hf_cache"
+    command:
+      - python
+      - -c
+      - |
+        import os, sys, shutil, subprocess
+        subprocess.run(
+            [sys.executable, "-m", "pip", "install", "--no-cache-dir", "huggingface_hub"],
+            check=True,
+        )
+        from huggingface_hub import hf_hub_download
+
+        repo = os.environ["MAIN_REPO"].strip()
+        dest = os.environ["MODEL_PATH"].strip()
+
+        if os.path.exists(dest):
+            print("=== Модель уже скачана:", dest, flush=True)
+        else:
+            fname = os.environ["MAIN_FILE"].strip()
+            tmp = "/models/main_tmp"
+            shutil.rmtree(tmp, ignore_errors=True)
+            print("=== Скачиваем", repo, "/", fname, flush=True)
+            path = hf_hub_download(repo_id=repo, filename=fname, local_dir=tmp)
+            os.makedirs(os.path.dirname(dest), exist_ok=True)
+            shutil.move(path, dest)
+            shutil.rmtree(tmp, ignore_errors=True)
+            print("=== Готово:", dest, flush=True)
+
+        gb = os.path.getsize(dest) / 1e9
+        print(f"=== размер {dest}: {gb:.2f} GB", flush=True)
+        if gb < 5.0:
+            print("!!! FATAL: файл подозрительно мал, проверьте MAIN_FILE", flush=True)
+            sys.exit(1)
+
+        if os.environ.get("LOAD_VISION", "0").strip() == "1":
+            vdest = os.environ["MMPROJ_PATH"].strip()
+            if os.path.exists(vdest):
+                print("=== mmproj уже скачан:", vdest, flush=True)
+            else:
+                vf = os.environ["MMPROJ_FILE"].strip()
+                vtmp = "/models/mmproj_tmp"
+                shutil.rmtree(vtmp, ignore_errors=True)
+                print("=== Скачиваем", repo, "/", vf, flush=True)
+                vp = hf_hub_download(repo_id=repo, filename=vf, local_dir=vtmp)
+                os.makedirs(os.path.dirname(vdest), exist_ok=True)
+                shutil.move(vp, vdest)
+                shutil.rmtree(vtmp, ignore_errors=True)
+                print("=== Готово:", vdest, flush=True)
+
+  init-template:
+    image: curlimages/curl:8.14.1
+    container_name: llama-init-template-pq2
+    restart: "no"
+    user: "0:0"
+    volumes:
+      - llama_models:/models
+    environment:
+      TEMPLATE_REPO: "${TEMPLATE_REPO:-Moore2877/Qwen-Fixed-Chat-Templates-llamacpp}"
+      TEMPLATE_REF: "${TEMPLATE_REF:-main}"
+      TEMPLATE_FILE: "${TEMPLATE_FILE:-chat_template.jinja}"
+      TEMPLATE_DIR: "/models/templates"
+      TEMPLATE_DEST: "/models/templates/chat_template.jinja"
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -eu
+        dest="$${TEMPLATE_DEST}"
+        # Пробуем несколько вариантов URL (raw -> blob -> resolve)
+        for url in \
+          "https://huggingface.co/$${TEMPLATE_REPO}/resolve/$${TEMPLATE_REF}/$${TEMPLATE_FILE}" \
+          "https://huggingface.co/$${TEMPLATE_REPO}/raw/$${TEMPLATE_REF}/$${TEMPLATE_FILE}" \
+          "https://huggingface.co/$${TEMPLATE_REPO}/blob/$${TEMPLATE_REF}/$${TEMPLATE_FILE}?download=true"; do
+          echo "=== Пробуем: $$url"
+          mkdir -p "$${TEMPLATE_DIR}"
+          # -L = следовать редиректам, User-Agent для обхода Cloudflare, --max-time 60
+          if curl -fsSL --retry 3 --retry-all-errors --max-time 60 \
+              -H "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" \
+              -o "$${dest}.tmp" "$$url" 2>/tmp/curl.err; then
+            # Проверяем, не получили ли мы HTML-страницу Cloudflare или ошибки
+            if head -c 500 "$${dest}.tmp" | grep -qiE '<!DOCTYPE html|<html|Just a moment|Checking your browser|Access denied|Repository not found|404'; then
+              echo "!!! Получили HTML, пробуем следующий URL..."
+              echo "--- Первые 200 байт ответа: ---"
+              head -c 200 "$${dest}.tmp"
+              echo ""
+              echo "--------------------------------"
+              rm -f "$${dest}.tmp"
+              continue
+            fi
+            # Проверка, что файл начинается с Jinja-синтаксиса
+            if head -c 20 "$${dest}.tmp" | grep -qE '^\{%-|^\{%'; then
+              mv "$${dest}.tmp" "$${dest}"
+              echo "=== ✅ Шаблон успешно скачан: $${dest}"
+              echo "=== Размер: $$(wc -c < "$${dest}") байт"
+              exit 0
+            else
+              echo "!!! Файл не похож на Jinja (не начинается с {%)"
+              head -c 100 "$${dest}.tmp"
+              echo ""
+              rm -f "$${dest}.tmp"
+              continue
+            fi
+          else
+            echo "!!! curl вернул ошибку (см. /tmp/curl.err):"
+            cat /tmp/curl.err 2>/dev/null || echo "(описание ошибки недоступно)"
+          fi
+        done
+        echo "!!! FATAL: ни один URL не сработал"
+        exit 1
+
+  ollama-embed:
+    image: ollama/ollama:latest
+    container_name: ollama-embed-pq2
+    restart: unless-stopped
+    ports:
+      - "${OLLAMA_PORT:-11435}:11434"
+    volumes:
+      - ollama_pq2_data:/root/.ollama
+    healthcheck:
+      test: ["CMD-SHELL", "ollama list >/dev/null 2>&1 || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+
+  pull-support:
+    image: ollama/ollama:latest
+    container_name: ollama-pull-support-pq2
+    restart: "no"
+    depends_on:
+      ollama-embed:
+        condition: service_healthy
+    entrypoint: []
+    environment:
+      OLLAMA_HOST: "http://ollama-embed:11434"
+      EMBED_MODEL: "${EMBED_MODEL:-nomic-embed-text}"
+    command: >
+      sh -c "
+      echo '=== pull $${EMBED_MODEL} ==='; ollama pull $${EMBED_MODEL};
+      echo '=== pull $${AUTOCOMPLETE_MODEL} ==='; ollama pull $${AUTOCOMPLETE_MODEL};
+      echo '=== Готово ==='
+      "
+    volumes:
+      - ollama_pq2_data:/root/.ollama
+
+volumes:
+  llama_models:
+    external: true
+    name: local-llama-bonsai2_llama_models
+  ollama_pq2_data:
