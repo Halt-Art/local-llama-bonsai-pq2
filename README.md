@@ -53,6 +53,13 @@ docker compose -f docker-compose-pq2.yml --env-file .env run --rm init-template
 docker compose -f docker-compose-pq2.yml --env-file .env run --rm init-models
 ```
 
+### 4\. Create volume
+
+
+```
+docker volume create local-llama-bonsai2_llama_models
+```
+
 ### 5\. Start the server
 
 ```
@@ -97,7 +104,7 @@ docker compose -f docker-compose-pq2.yml up -d
 
 * ✅ Validated in multi-hour agentic sessions with  **Goose** — MCP extensions, long agent loops, context compression, skill library
 * ✅ **Hermes** -  Verified in lighter usage
-* ✅ **Any OpenAI-compatible client** (`/v1/chat/completions`)
+* ✅ **Any OpenAI-compatible client** (`/v1/chat/completions`), but first remove the five Goose-only keys below
 
 **Important:** your agent harness must trigger context compression before the window fills. Tested thresholds: 75% of `CTX\\\_SIZE` (49152 tokens at 65,536).
 
@@ -120,7 +127,6 @@ Windows client only: the prompts assume cmd.exe.
 | --- | --- |
 | MOIM passthrough block (`moim_system_prompt_block`) | Without it the todo extension stores notes the model never sees again |
 | cmd.exe command cookbook, `&&` for dependent steps, `findstr` fallback | The default prompt gives no shell guidance; broken placeholders and PowerShell syntax waste turns |
-| UTF-8 / cp1251 reads via `stdout.buffer` | Prevents mojibake and the doubled CR that `print()` produces on Windows |
 | Working state protocol (`plan.md`) | Durable task state; after compaction the agent resumes instead of re-exploring the project |
 | Safety rules, no subagent delegation | PID-only kills (a broad `taskkill` kills Goose's own extension servers); one inference slot |
 | Static rules first, dynamic blocks last | Keeps the cached prompt prefix stable |
