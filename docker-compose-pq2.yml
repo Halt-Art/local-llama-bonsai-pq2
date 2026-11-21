@@ -80,8 +80,12 @@ services:
       - "256"
       - --predict
       - "${MAX_TOKENS:-16384}"
+      - --context-shift
+      - --keep
+      - "${KEEP_TOKENS:-8192}"
+      - --metrics
       - --temp
-      - "${TEMPERATURE:-0.25}"
+      - "${TEMPERATURE:-0.4}"
       - --top-p
       - "${TOP_P:-0.95}"
       - --top-k
@@ -111,7 +115,6 @@ services:
     environment:
       CUDA_VISIBLE_DEVICES: "0"
       LLAMA_CACHE: "/models/hf_cache"
-      LLAMA_ARG_KEEP_ALIVE: "-1"
     
     deploy:
       resources:
