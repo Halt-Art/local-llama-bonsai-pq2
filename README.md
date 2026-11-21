@@ -103,7 +103,6 @@ docker compose -f docker-compose-pq2.yml up -d
 ## 🧠 Agent Harness Compatibility
 
 * ✅ Validated in multi-hour agentic sessions with  **Goose** — MCP extensions, long agent loops, context compression, skill library
-* ✅ **Hermes** -  Verified in lighter usage
 * ✅ **Any OpenAI-compatible client** (`/v1/chat/completions`), but first remove the five Goose-only keys below
 
 **Important:** your agent harness must trigger context compression before the window fills. Tested thresholds: 75% of `CTX\\\_SIZE` (49152 tokens at 65,536).
